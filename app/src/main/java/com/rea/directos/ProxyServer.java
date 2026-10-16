@@ -69,7 +69,13 @@ public class ProxyServer extends NanoHTTPD {
         return null;
     }
 
-    private static Response text(Response.Status status, String msg) {
+    /** 502 Bad Gateway (el enum de NanoHTTPD 2.3.1 no lo incluye). */
+    private static final Response.IStatus BAD_GATEWAY = new Response.IStatus() {
+        @Override public String getDescription() { return "502 Bad Gateway"; }
+        @Override public int getRequestStatus() { return 502; }
+    };
+
+    private static Response text(Response.IStatus status, String msg) {
         return newFixedLengthResponse(status, "text/plain; charset=utf-8", msg);
     }
 
@@ -83,7 +89,7 @@ public class ProxyServer extends NanoHTTPD {
         h.put("accept", "*/*");
         Http.Resp r = Http.get(info.cdn, h);
         if (r.status != 200) {
-            return text(Response.Status.BAD_GATEWAY, "playlist CDN status=" + r.status);
+            return text(BAD_GATEWAY, "playlist CDN status=" + r.status);
         }
         String body = new String(r.body, StandardCharsets.UTF_8);
         StringBuilder out = new StringBuilder();
@@ -116,14 +122,16 @@ public class ProxyServer extends NanoHTTPD {
         }
         String segFull;
         try {
-            String padded = u + "=".repeat((4 - u.length() % 4) % 4);
-            segFull = new String(Base64.getUrlDecoder().decode(padded), StandardCharsets.UTF_8);
+            int need = (4 - u.length() % 4) % 4;
+            StringBuilder ub = new StringBuilder(u);
+            for (int i = 0; i < need; i++) ub.append('=');
+            segFull = new String(Base64.getUrlDecoder().decode(ub.toString()), StandardCharsets.UTF_8);
         } catch (Exception e) {
             return text(Response.Status.BAD_REQUEST, "u invalido");
         }
         String[] res = RbApi.resolveSegmentUrl(segFull, provider.salt());
         if (res == null) {
-            return text(Response.Status.BAD_GATEWAY, "segmento sin CSL");
+            return text(BAD_GATEWAY, "segmento sin CSL");
         }
         Map<String, String> h = new HashMap<>();
         h.put("user-agent", RbApi.UA);
@@ -135,7 +143,7 @@ public class ProxyServer extends NanoHTTPD {
         h.put("accept", "*/*");
         Http.Resp r = Http.get(res[0], h);
         if (r.status != 200 || r.body.length == 0) {
-            return text(Response.Status.BAD_GATEWAY, "CDN " + r.status + " len=" + r.body.length);
+            return text(BAD_GATEWAY, "CDN " + r.status + " len=" + r.body.length);
         }
         if ((r.body[0] & 0xFF) == 0x47) {
             return newFixedLengthResponse(Response.Status.OK, "video/mp2t",
@@ -143,7 +151,7 @@ public class ProxyServer extends NanoHTTPD {
         }
         String ct = r.contentType == null ? "application/octet-stream" : r.contentType;
         if (ct.toLowerCase(Locale.ROOT).contains("text/html")) {
-            return text(Response.Status.BAD_GATEWAY, "contenido inesperado del CDN");
+            return text(BAD_GATEWAY, "contenido inesperado del CDN");
         }
         return newFixedLengthResponse(Response.Status.OK, ct,
                 new ByteArrayInputStream(r.body), r.body.length);
