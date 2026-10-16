@@ -38,18 +38,30 @@ public class ProxyServer extends NanoHTTPD {
     @Override
     public Response serve(IHTTPSession session) {
         try {
+            if (session.getMethod() == Method.OPTIONS) {
+                return cors(newFixedLengthResponse(Response.Status.NO_CONTENT, "text/plain", ""));
+            }
             String uri = session.getUri();
             if (uri == null || uri.isEmpty() || uri.equals("/")) {
-                return text(Response.Status.OK, "REA Directos proxy activo");
+                return cors(text(Response.Status.OK, "SportStreaming proxy activo"));
             }
+            String host = session.getHeaders().get("host");
             Matcher m = PLAYLIST.matcher(uri);
-            if (m.matches()) return playlist(Long.parseLong(m.group(1)));
+            if (m.matches()) return cors(playlist(Long.parseLong(m.group(1)), host));
             m = SEGMENT.matcher(uri);
-            if (m.matches()) return segment(Long.parseLong(m.group(1)), param(session, "u"));
-            return text(Response.Status.NOT_FOUND, "not found");
+            if (m.matches()) return cors(segment(Long.parseLong(m.group(1)), param(session, "u")));
+            return cors(text(Response.Status.NOT_FOUND, "not found"));
         } catch (Exception e) {
-            return text(Response.Status.INTERNAL_ERROR, "proxy error: " + e);
+            return cors(text(Response.Status.INTERNAL_ERROR, "proxy error: " + e));
         }
+    }
+
+    /** Cabeceras CORS (el receptor de Chromecast tambien lee este HLS). */
+    private static Response cors(Response r) {
+        r.addHeader("Access-Control-Allow-Origin", "*");
+        r.addHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+        r.addHeader("Access-Control-Allow-Headers", "*");
+        return r;
     }
 
     private static String param(IHTTPSession session, String name) {
@@ -79,11 +91,14 @@ public class ProxyServer extends NanoHTTPD {
         return newFixedLengthResponse(status, "text/plain; charset=utf-8", msg);
     }
 
-    private Response playlist(long sid) throws Exception {
+    private Response playlist(long sid, String host) throws Exception {
         StreamInfo info = provider.stream(sid);
         if (info == null || info.cdn == null) {
             return text(Response.Status.NOT_FOUND, "stream desconocido (resuelve el canal en la app)");
         }
+        String base = "http://" + (host != null && !host.isEmpty()
+                ? host
+                : "127.0.0.1:" + getListeningPort());
         Map<String, String> h = new HashMap<>();
         h.put("user-agent", RbApi.UA);
         h.put("accept", "*/*");
@@ -106,8 +121,7 @@ public class ProxyServer extends NanoHTTPD {
             }
             String u = Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(segUrl.getBytes(StandardCharsets.UTF_8));
-            out.append("http://127.0.0.1:").append(getListeningPort())
-                    .append("/go/").append(sid).append("/seg?u=").append(u).append('\n');
+            out.append(base).append("/go/").append(sid).append("/seg?u=").append(u).append('\n');
         }
         return newFixedLengthResponse(Response.Status.OK, "application/vnd.apple.mpegurl", out.toString());
     }

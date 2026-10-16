@@ -1,13 +1,16 @@
-# REA Directos (Android)
+# SportStreaming (Android)
 
 App Android (Java) para ver los partidos en directo de `com.fctv77.app` desde el teléfono,
 sin PC: la app hace en local lo mismo que `tools/rb_live.py` (resolver la API, descifrar los
 segmentos "bru" del CDN y reescribirlos como HLS normal).
 
-- **Listado de partidos con directo** (según la API en vivo).
+- **Listado de partidos con directo** (según la API en vivo) con **buscador/filtro** por nombre.
 - Al pulsar un partido: **canales disponibles**.
-- Al pulsar un canal: **reproductor integrado** (Media3 ExoPlayer) con botón **"Ver en VLC"**
-  (intent a VLC usando la misma URL local del proxy).
+- Al pulsar un canal: **reproductor integrado** (Media3 ExoPlayer) con:
+  - botón **pantalla completa** (inmersivo + rotación),
+  - botón **Chromecast** (`Enviar a TV`): el televisor reproduce el canal vía el proxy del
+    móvil (misma red WiFi),
+  - botón **"Ver en VLC"** (intent a VLC usando la misma URL local del proxy).
 
 ## Instalación
 
@@ -22,29 +25,31 @@ segmentos "bru" del CDN y reescribirlos como HLS normal).
 App Android (monolítica, Java)
 ├── RbApi        -> port de rb_live.py: Firestore (DATA_API) -> bs/md5 -> match/live,
 │                   match/detail, stream/detail, ROT47 + bruDecode + firma _s2
-├── ProxyService -> foreground service con servidor HTTP local (NanoHTTPD, 127.0.0.1:8899)
-│                   /go/<sid>/index.m3u8  (playlist reescrita)
+├── ProxyService -> foreground service con servidor HTTP local (NanoHTTPD, puerto 8899+)
+│                   /go/<sid>/index.m3u8  (playlist reescrita, con el host del cliente)
 │                   /go/<sid>/seg?u=...   (segmento resuelto contra el CDN)
-├── PlayerActivity -> ExoPlayer contra el proxy local + botón VLC (intent)
-└── UI: MainActivity (partidos) -> MatchActivity (canales) -> PlayerActivity
+├── PlayerActivity -> ExoPlayer contra el proxy local + pantalla completa + Chromecast + VLC
+└── UI: MainActivity (partidos + filtro) -> MatchActivity (canales) -> PlayerActivity
 ```
 
 Detalles clave del port:
 
 - TLS sin verificación para API/CDN (igual que `rb_live.py`, `CERT_NONE`).
-- Cleartext HTTP permitido **solo** para `127.0.0.1` (network security config).
+- Cleartext HTTP permitido **solo** para `127.0.0.1` (network security config) para el
+  reproductor local; el receptor de Chromecast accede al proxy por la **IP del móvil en la
+  WiFi** (misma red), con cabeceras CORS incluidas.
 - UA `rbapp/--dg-foth-app-320/3.0.320/12/13/UTC/en` + `origin/referer` en las llamadas a la API.
 - VLC (otra app) puede leer `http://127.0.0.1:8899/...` porque el proxy corre en un
   foreground service; hay un botón "Detener" en la notificación.
-- Tests unitarios (`app/src/test/.../RbApiTest.java`) con vectores generados por el propio
-  `rb_live.py` (bruDecode, _s2, ctump) para validar el port.
+- Tests unitarios (`app/src/test/.../RbApiTest.java`, `TextTest.java`) con vectores generados
+  por el propio `rb_live.py` (bruDecode, _s2, ctump) y del filtro de búsqueda, para validar el port.
 
 ## Compilación (GitHub Actions)
 
 `.github/workflows/build.yml`:
 
-- **Push a `main`** → tests + APK debug como artifact (`rea-directos-debug`).
-- **Tag `v*`** (p. ej. `git tag v1.0.0 && git push origin v1.0.0`) → además APK release
+- **Push a `main`** → tests + APK debug como artifact (`sportstreaming-debug`).
+- **Tag `v*`** (p. ej. `git tag v1.1.0 && git push origin v1.1.0`) → además APK release
   firmada y **Release de GitHub** con el APK adjunto.
 
 ### Firma (secrets)
@@ -83,15 +88,17 @@ storeType=PKCS12
 
 ```
 app/src/main/java/com/rea/directos/
-  Pb.java            parser mínimmo de protobuf
-  Http.java          OkHttp (TLS sin verificación)
-  RbApi.java         port de rb_live.py (API + CSL + utilidades)
-  ProxyServer.java   proxy HLS (NanoHTTPD)
-  ProxyService.java  foreground service que mantiene el proxy
-  MainActivity.java  lista de partidos
-  MatchActivity.java canales por partido
-  PlayerActivity.java reproductor (ExoPlayer + VLC)
-  RowsAdapter.java   adaptador de listas
+  Pb.java               parser mínimo de protobuf
+  Http.java             OkHttp (TLS sin verificación)
+  RbApi.java            port de rb_live.py (API + CSL + utilidades)
+  ProxyServer.java      proxy HLS (NanoHTTPD, con CORS y host del cliente)
+  ProxyService.java     foreground service que mantiene el proxy
+  CastOptionsProvider.java  receptor por defecto de Chromecast
+  MainActivity.java     lista de partidos + filtro de búsqueda
+  MatchActivity.java    canales por partido
+  PlayerActivity.java   reproductor (ExoPlayer + pantalla completa + Chromecast + VLC)
+  RowsAdapter.java      adaptador de listas
+  Text.java             normalización de texto (filtro sin acentos)
 ```
 
 ## Notas

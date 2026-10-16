@@ -8,6 +8,11 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -17,6 +22,8 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -92,6 +99,34 @@ public class ProxyService extends Service {
 
     public static String proxyUrl(long sid) {
         return "http://127.0.0.1:" + port + "/go/" + sid + "/index.m3u8";
+    }
+
+    /** URL del proxy vista desde la red local (la usa el Chromecast); null si no hay WiFi. */
+    public static String lanUrl(Context ctx, long sid) {
+        String ip = wifiIpv4(ctx);
+        if (ip == null) return null;
+        return "http://" + ip + ":" + port + "/go/" + sid + "/index.m3u8";
+    }
+
+    /** IPv4 de la red WiFi activa, o null si el movil no esta en WiFi. */
+    private static String wifiIpv4(Context ctx) {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) ctx.getApplicationContext()
+                    .getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return null;
+            Network network = cm.getActiveNetwork();
+            if (network == null) return null;
+            NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+            if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return null;
+            LinkProperties lp = cm.getLinkProperties(network);
+            if (lp == null) return null;
+            for (LinkAddress la : lp.getLinkAddresses()) {
+                InetAddress a = la.getAddress();
+                if (a instanceof Inet4Address && !a.isLoopbackAddress()) return a.getHostAddress();
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     // ------------------------------------------------------------------

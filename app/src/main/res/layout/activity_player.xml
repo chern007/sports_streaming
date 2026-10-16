@@ -4,14 +4,49 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
-    <androidx.media3.ui.PlayerView
-        android:id="@+id/player"
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:background="#000000" />
+        android:background="#000000">
+
+        <androidx.media3.ui.PlayerView
+            android:id="@+id/player"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#000000" />
+
+        <LinearLayout
+            android:id="@+id/overlay"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:orientation="horizontal"
+            android:padding="6dp">
+
+            <androidx.mediarouter.app.MediaRouteButton
+                android:id="@+id/cast"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
+                android:layout_gravity="center_vertical"
+                android:background="@drawable/bg_overlay_btn"
+                android:contentDescription="@string/cast" />
+
+            <ImageButton
+                android:id="@+id/fullscreen"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/bg_overlay_btn"
+                android:contentDescription="@string/fullscreen"
+                android:padding="9dp"
+                android:src="@drawable/ic_fullscreen"
+                android:tint="#FFFFFF" />
+        </LinearLayout>
+    </FrameLayout>
 
     <LinearLayout
+        android:id="@+id/bottom_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center"

@@ -1,6 +1,9 @@
 <resources>
-    <string name="app_name">REA Directos</string>
+    <string name="app_name">SportStreaming</string>
     <string name="refresh">Buscar directos</string>
+    <string name="search_hint">Filtrar partidos por nombre…</string>
+    <string name="matches_count">%1$d partido(s) con directo</string>
+    <string name="matches_filtered">%1$d de %2$d partido(s)</string>
     <string name="preparing">Preparando…</string>
     <string name="no_streams">No hay directos ahora mismo. Prueba de nuevo en unos minutos.</string>
     <string name="loading_matches">Buscando partidos en directo…</string>
@@ -11,4 +14,7 @@
     <string name="open_vlc">Ver en VLC</string>
     <string name="no_vlc">No hay ninguna app compatible. Instala VLC.</string>
     <string name="error_prefix">Error</string>
+    <string name="fullscreen">Pantalla completa</string>
+    <string name="cast">Enviar a TV (Chromecast)</string>
+    <string name="cast_need_wifi">Conéctate a la misma red WiFi que el Chromecast e inténtalo de nuevo.</string>
 </resources>

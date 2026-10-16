@@ -6,7 +6,10 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
@@ -19,7 +22,7 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Lista de partidos con directo (equivalente a `rb_live.py list`). */
+/** Lista de partidos con directo + filtro por nombre (equivalente a `rb_live.py list`). */
 public class MainActivity extends AppCompatActivity {
 
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -27,7 +30,11 @@ public class MainActivity extends AppCompatActivity {
 
     private TextView status;
     private Button refresh;
+    private EditText search;
     private RowsAdapter adapter;
+
+    private final List<RowsAdapter.Row> allRows = new ArrayList<>();
+    private boolean loaded;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -37,6 +44,7 @@ public class MainActivity extends AppCompatActivity {
 
         status = findViewById(R.id.status);
         refresh = findViewById(R.id.refresh);
+        search = findViewById(R.id.search);
         RecyclerView list = findViewById(R.id.list);
         list.setLayoutManager(new LinearLayoutManager(this));
         adapter = new RowsAdapter(pos -> {
@@ -45,10 +53,34 @@ public class MainActivity extends AppCompatActivity {
         });
         list.setAdapter(adapter);
 
+        search.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void afterTextChanged(Editable s) { applyFilter(); }
+        });
+
         refresh.setOnClickListener(v -> load());
         requestNotifPermission();
         ProxyService.ensureStarted(this);
         load();
+    }
+
+    /** Aplica el texto del buscador como filtro sobre los partidos cargados. */
+    private void applyFilter() {
+        String key = Text.fold(search.getText().toString());
+        List<RowsAdapter.Row> visible = new ArrayList<>();
+        for (RowsAdapter.Row r : allRows) {
+            if (key.isEmpty() || Text.fold(r.title).contains(key)) visible.add(r);
+        }
+        adapter.set(visible);
+        if (!loaded) return;
+        if (allRows.isEmpty()) {
+            status.setText(R.string.no_streams);
+        } else if (key.isEmpty()) {
+            status.setText(getString(R.string.matches_count, allRows.size()));
+        } else {
+            status.setText(getString(R.string.matches_filtered, visible.size(), allRows.size()));
+        }
     }
 
     private void requestNotifPermission() {
@@ -59,9 +91,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void load() {
+        loaded = false;
+        allRows.clear();
+        applyFilter();
         status.setText(R.string.loading_matches);
         refresh.setEnabled(false);
-        adapter.clear();
         ProxyService.ensureStarted(this);
         ProxyService.whenReady(
                 () -> io.execute(() -> {
@@ -76,10 +110,10 @@ public class MainActivity extends AppCompatActivity {
                                         "matchId=" + m.id + " · " + m.channels + " canal(es)",
                                         m));
                             }
-                            adapter.set(rows);
-                            status.setText(ms.isEmpty()
-                                    ? getString(R.string.no_streams)
-                                    : ms.size() + " partido(s) con directo");
+                            allRows.clear();
+                            allRows.addAll(rows);
+                            loaded = true;
+                            applyFilter();
                             refresh.setEnabled(true);
                         });
                     } catch (Exception e) {
