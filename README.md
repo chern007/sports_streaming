@@ -17,9 +17,14 @@ segmentos "bru" del CDN y reescribirlos como HLS normal).
 ## Instalación
 
 1. Ve a la pestaña **Releases** de este repositorio.
-2. Descarga el APK (si el build está firmado se adjunta `app-release.apk`; si no, `app-debug.apk`).
+2. Descarga `app-release.apk` (la versión firmada).
 3. Instálalo en el teléfono (permitir "instalar apps de orígenes desconocidos").
 4. Opcional: instala **VLC** para el botón "Ver en VLC".
+
+> Nota: si tienes instalada una build "debug" antigua (de releases anteriores a v1.2.0),
+> desinstálala antes: aquellas builds usaban otra firma y Android no deja actualizar entre
+> firmas distintas. Desde v1.2.0 la firma es siempre la misma y las actualizaciones se
+> instalan encima sin desinstalar.
 
 ## Cómo funciona
 
@@ -69,8 +74,11 @@ Detalles clave del port:
 `.github/workflows/build.yml`:
 
 - **Push a `main`** → tests + APK debug como artifact (`sportstreaming-debug`).
-- **Tag `v*`** (p. ej. `git tag v1.1.0 && git push origin v1.1.0`) → además APK release
-  firmada y **Release de GitHub** con el APK adjunto.
+- **Tag `v*`** (p. ej. `git tag v1.2.0 && git push origin v1.2.0`) → además APK release
+  firmada y **Release de GitHub** con el APK firmado adjunto. El `versionName` y el
+  `versionCode` se calculan solos desde el tag (v1.2.0 → versionCode 10200 =
+  mayor×10000 + menor×100 + parche), necesario para poder actualizar la app encima.
+- **Manual** (Actions → Build APK → Run workflow) para compilar sin publicar release.
 
 ### Firma (secrets)
 
