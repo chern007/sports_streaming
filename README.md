@@ -89,10 +89,14 @@ Para que la release salga firmada hay que configurar 4 secrets en
 |---|---|
 | `KEYSTORE_BASE64` | contenido del keystore en base64 (tu archivo `release.keystore.b64`) |
 | `KEYSTORE_PASSWORD` | contraseña del keystore |
-| `KEY_ALIAS` | alias de la clave |
-| `KEY_PASSWORD` | contraseña de la clave |
+| `KEY_ALIAS` | alias de la clave (opcional: si falta o está vacío se usa `rea`) |
+| `KEY_PASSWORD` | contraseña de la clave (opcional si es la misma del almacén, como en PKCS12) |
 
-Sin estos secrets el workflow sigue funcionando: adjunta el APK debug a la release.
+Sin `KEYSTORE_BASE64` ni `KEYSTORE_PASSWORD` el workflow sigue funcionando: adjunta el APK debug a la release.
+
+> Nota: GitHub **nunca vuelve a mostrar el valor** de un secret (al pulsar "Update" el campo aparece vacío).
+> Si se guarda esa edición sin escribir nada, el valor se borra. Por eso el workflow trae valores por
+> defecto para el alias y la contraseña de clave.
 
 ### Build local (opcional)
 

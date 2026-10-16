@@ -28,8 +28,8 @@ android {
             if (hasEnvSigning) {
                 storeFile file(envKeystore)
                 storePassword System.getenv('KEYSTORE_PASSWORD')
-                keyAlias System.getenv('KEY_ALIAS')
-                keyPassword System.getenv('KEY_PASSWORD')
+                keyAlias (System.getenv('KEY_ALIAS') ?: 'rea')
+                keyPassword (System.getenv('KEY_PASSWORD') ?: System.getenv('KEYSTORE_PASSWORD'))
                 storeType System.getenv('SIGNING_STORE_TYPE') ?: 'PKCS12'
             } else if (hasPropSigning) {
                 storeFile rootProject.file(signingProps.getProperty('storeFile'))
