@@ -17,4 +17,11 @@
     <string name="fullscreen">Pantalla completa</string>
     <string name="cast">Enviar a TV (Chromecast)</string>
     <string name="cast_need_wifi">Conéctate a la misma red WiFi que el Chromecast e inténtalo de nuevo.</string>
+    <string name="cast_sending">Enviando el canal al televisor…</string>
+    <string name="cast_probe_failed">No se pudo enviar al TV: el proxy no responde en %1$s (%2$s). Comprueba que el móvil y el TV están en la misma WiFi.</string>
+    <string name="cast_playback_error">La TV no pudo reproducir el canal (%1$s). Comprueba que está en la misma red WiFi que el móvil.</string>
+    <string name="no_response">sin respuesta</string>
+    <string name="proxy_starting">Iniciando…</string>
+    <string name="proxy_notif">Proxy activo (puerto %1$d)</string>
+    <string name="proxy_notif_diag">Proxy activo · diagnóstico: %1$s</string>
 </resources>

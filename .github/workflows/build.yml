@@ -43,7 +43,12 @@ jobs:
         run: echo "${KEYSTORE_B64}" | base64 -d > "$RUNNER_TEMP/release.keystore"
 
       - name: Build debug APK
-        run: ./gradlew --no-daemon assembleDebug
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            ./gradlew --no-daemon assembleDebug -PversionName="${GITHUB_REF_NAME#v}"
+          else
+            ./gradlew --no-daemon assembleDebug
+          fi
 
       - name: Build release APK (firmada)
         if: env.HAS_KEYSTORE == 'true'

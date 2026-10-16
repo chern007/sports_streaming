@@ -20,6 +20,8 @@ import androidx.media3.cast.SessionAvailabilityListener;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.MimeTypes;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
@@ -54,6 +56,7 @@ public class PlayerActivity extends AppCompatActivity {
     private long sid;
     private String label;
     private boolean fullscreen;
+    private boolean casting;
     private MediaItem localItem;
 
     @Override
@@ -146,36 +149,78 @@ public class PlayerActivity extends AppCompatActivity {
                 @Override public void onCastSessionAvailable() { switchToCast(); }
                 @Override public void onCastSessionUnavailable() { switchToLocal(); }
             });
+            castPlayer.addListener(new Player.Listener() {
+                @Override public void onPlayerError(PlaybackException error) {
+                    if (!casting) return;
+                    Toast.makeText(PlayerActivity.this,
+                            getString(R.string.cast_playback_error, error.getErrorCodeName()),
+                            Toast.LENGTH_LONG).show();
+                }
+            });
+            // Si ya hay una sesion de Cast activa (p. ej. al reabrir el reproductor), envia el canal.
+            if (castContext.getSessionManager().getCurrentCastSession() != null) {
+                switchToCast();
+            }
         } catch (Throwable t) {
             View b = findViewById(R.id.cast);
             if (b != null) b.setVisibility(View.GONE);
         }
     }
 
-    /** Sesion de Cast conectada: carga el canal en el televisor (por la IP local del movil). */
+    /** Sesion de Cast conectada: comprueba el proxy en la red local y envia el canal al televisor. */
     private void switchToCast() {
         if (castPlayer == null) return;
-        String lanUrl = ProxyService.lanUrl(this, sid);
+        final String lanUrl = ProxyService.lanUrl(this, sid);
         if (lanUrl == null) {
             Toast.makeText(this, R.string.cast_need_wifi, Toast.LENGTH_LONG).show();
-            if (castContext != null) castContext.getSessionManager().endCurrentSession(false);
+            endCastSession();
             return;
         }
+        new Thread(() -> {
+            final int code = ProxyService.probeLan(lanUrl);
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (code == 200) {
+                    startCastPlayback(lanUrl);
+                } else {
+                    Toast.makeText(PlayerActivity.this,
+                            getString(R.string.cast_probe_failed, lanUrl,
+                                    code < 0 ? getString(R.string.no_response) : String.valueOf(code)),
+                            Toast.LENGTH_LONG).show();
+                    endCastSession();
+                }
+            });
+        }, "cast-probe").start();
+    }
+
+    /** Envia la playlist al receptor (la TV la lee del proxy via red local). */
+    private void startCastPlayback(String lanUrl) {
+        if (castPlayer == null || player == null) return;
         player.pause();
         MediaItem item = new MediaItem.Builder()
                 .setUri(lanUrl)
                 .setMimeType(MimeTypes.APPLICATION_M3U8)
                 .setMediaMetadata(new MediaMetadata.Builder().setTitle(label).build())
                 .build();
+        casting = true;
         castPlayer.setMediaItem(item);
         castPlayer.prepare();
         castPlayer.play();
         view.setPlayer(castPlayer);
+        Toast.makeText(this, R.string.cast_sending, Toast.LENGTH_SHORT).show();
+    }
+
+    private void endCastSession() {
+        try {
+            if (castContext != null) castContext.getSessionManager().endCurrentSession(false);
+        } catch (Exception ignored) {
+        }
     }
 
     /** Sesion de Cast cerrada: vuelve al reproductor local. */
     private void switchToLocal() {
-        if (player == null) return;
+        if (player == null || !casting) return;
+        casting = false;
         player.setMediaItem(localItem);
         player.prepare();
         player.play();

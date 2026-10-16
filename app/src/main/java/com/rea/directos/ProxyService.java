@@ -22,8 +22,15 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -54,11 +61,14 @@ public class ProxyService extends Service {
     public static volatile String referer;
 
     private ProxyServer server;
+    private ConnectivityManager.NetworkCallback netCallback;
 
     private final ProxyServer.Provider provider = new ProxyServer.Provider() {
         @Override public StreamInfo stream(long sid) { return STREAMS.get(sid); }
         @Override public String salt() { return salt; }
         @Override public String referer() { return referer; }
+        @Override public List<StreamInfo> streamList() { return new ArrayList<>(STREAMS.values()); }
+        @Override public String phoneIp() { return wifiIpv4(ProxyService.this); }
     };
 
     // ------------------------------------------------------------------
@@ -108,25 +118,64 @@ public class ProxyService extends Service {
         return "http://" + ip + ":" + port + "/go/" + sid + "/index.m3u8";
     }
 
-    /** IPv4 de la red WiFi activa, o null si el movil no esta en WiFi. */
+    /** IPv4 de la red WiFi (aunque no sea la red activa), o null si no hay WiFi. */
     private static String wifiIpv4(Context ctx) {
         try {
             ConnectivityManager cm = (ConnectivityManager) ctx.getApplicationContext()
                     .getSystemService(Context.CONNECTIVITY_SERVICE);
             if (cm == null) return null;
-            Network network = cm.getActiveNetwork();
-            if (network == null) return null;
-            NetworkCapabilities caps = cm.getNetworkCapabilities(network);
-            if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return null;
-            LinkProperties lp = cm.getLinkProperties(network);
-            if (lp == null) return null;
-            for (LinkAddress la : lp.getLinkAddresses()) {
-                InetAddress a = la.getAddress();
-                if (a instanceof Inet4Address && !a.isLoopbackAddress()) return a.getHostAddress();
+            String best = null;
+            for (Network network : cm.getAllNetworks()) {
+                NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+                if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue;
+                LinkProperties lp = cm.getLinkProperties(network);
+                if (lp == null) continue;
+                for (LinkAddress la : lp.getLinkAddresses()) {
+                    InetAddress a = la.getAddress();
+                    if (!(a instanceof Inet4Address) || a.isLoopbackAddress() || a.isLinkLocalAddress()) continue;
+                    String ip = a.getHostAddress();
+                    if (a.isSiteLocalAddress()) return ip;   // 10/8, 172.16/12, 192.168/16
+                    if (best == null) best = ip;
+                }
+            }
+            return best;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Comprueba desde el propio móvil que el proxy responde por la IP de la red local.
+     * Usa un socket crudo (OkHttp lo bloquearía: la app solo permite texto plano a 127.0.0.1).
+     * Devuelve el código HTTP (200 esperado) o -1 si no hubo respuesta.
+     */
+    public static int probeLan(String lanUrl) {
+        try {
+            URI u = new URI(lanUrl);
+            String host = u.getHost();
+            if (host == null) return -1;
+            int prt = u.getPort() > 0 ? u.getPort() : 80;
+            String path = u.getRawPath() == null || u.getRawPath().isEmpty() ? "/" : u.getRawPath();
+            if (u.getRawQuery() != null) path += "?" + u.getRawQuery();
+            try (Socket s = new Socket()) {
+                s.connect(new InetSocketAddress(host, prt), 4000);
+                s.setSoTimeout(8000);
+                OutputStream out = s.getOutputStream();
+                out.write(("GET " + path + " HTTP/1.1\r\nHost: " + host + ":" + prt
+                        + "\r\nUser-Agent: SportStreaming-probe\r\nConnection: close\r\n\r\n")
+                        .getBytes(StandardCharsets.US_ASCII));
+                out.flush();
+                BufferedReader in = new BufferedReader(
+                        new InputStreamReader(s.getInputStream(), StandardCharsets.US_ASCII));
+                String line = in.readLine();
+                if (line != null && line.startsWith("HTTP/")) {
+                    String[] parts = line.split(" ");
+                    if (parts.length >= 2) return Integer.parseInt(parts[1]);
+                }
             }
         } catch (Exception ignored) {
         }
-        return null;
+        return -1;
     }
 
     // ------------------------------------------------------------------
@@ -142,7 +191,8 @@ public class ProxyService extends Service {
         super.onCreate();
         instance = this;
         createChannel();
-        startForegroundCompat("Iniciando…");
+        startForegroundCompat(getString(R.string.proxy_starting));
+        registerNetCallback();
         startInit();
     }
 
@@ -158,6 +208,14 @@ public class ProxyService extends Service {
 
     @Override
     public void onDestroy() {
+        if (netCallback != null) {
+            try {
+                ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                if (cm != null) cm.unregisterNetworkCallback(netCallback);
+            } catch (Exception ignored) {
+            }
+            netCallback = null;
+        }
         if (server != null) {
             try {
                 server.stop();
@@ -202,7 +260,7 @@ public class ProxyService extends Service {
             server = s;
             port = chosen;
             ready = true;
-            updateNotification("Proxy activo (puerto " + port + ")");
+            updateProxyNotification();
             flushReady();
         } catch (Exception e) {
             String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
@@ -239,6 +297,35 @@ public class ProxyService extends Service {
     // ------------------------------------------------------------------
     // Notificacion
     // ------------------------------------------------------------------
+    /** Refresca la notificación con la URL de diagnóstico cuando cambia la red. */
+    private void registerNetCallback() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) return;
+            netCallback = new ConnectivityManager.NetworkCallback() {
+                @Override public void onAvailable(Network network) { updateProxyNotification(); }
+                @Override public void onLost(Network network) { updateProxyNotification(); }
+                @Override public void onLinkPropertiesChanged(Network network, LinkProperties lp) {
+                    updateProxyNotification();
+                }
+            };
+            cm.registerDefaultNetworkCallback(netCallback);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void updateProxyNotification() {
+        if (!ready || instance == null) return;
+        String ip = wifiIpv4(this);
+        String text = ip == null
+                ? getString(R.string.proxy_notif, port)
+                : getString(R.string.proxy_notif_diag, "http://" + ip + ":" + port);
+        try {
+            updateNotification(text);
+        } catch (Exception ignored) {
+        }
+    }
+
     private void createChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "Proxy", NotificationManager.IMPORTANCE_LOW);
