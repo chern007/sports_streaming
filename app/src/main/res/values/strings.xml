@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">REA Directos</string>
+    <string name="refresh">Buscar directos</string>
+    <string name="preparing">Preparando…</string>
+    <string name="no_streams">No hay directos ahora mismo. Prueba de nuevo en unos minutos.</string>
+    <string name="loading_matches">Buscando partidos en directo…</string>
+    <string name="loading_channels">Cargando canales…</string>
+    <string name="no_channels">Este partido no tiene canales disponibles.</string>
+    <string name="resolving_channel">Resolviendo canal…</string>
+    <string name="channel_error">No se pudo resolver el canal.</string>
+    <string name="open_vlc">Ver en VLC</string>
+    <string name="no_vlc">No hay ninguna app compatible. Instala VLC.</string>
+    <string name="error_prefix">Error</string>
+</resources>
