@@ -6,6 +6,8 @@ import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.View;
 import android.widget.ImageButton;
 import android.widget.Toast;
@@ -22,7 +24,10 @@ import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
 import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
 
@@ -38,6 +43,12 @@ public class PlayerActivity extends AppCompatActivity {
     private static final String EXTRA_LABEL = "label";
     private static final String VLC_PACKAGE = "org.videolan.vlc";
     private static final String STATE_FULLSCREEN = "fullscreen";
+    private static final int MAX_RECONNECTS = 8;
+
+    private final Handler retryHandler = new Handler(Looper.getMainLooper());
+    private final Runnable resetReconnects = () -> reconnects = 0;
+    private Runnable pendingRetry;
+    private int reconnects;
 
     public static void start(Context ctx, long sid, String label) {
         Intent i = new Intent(ctx, PlayerActivity.class);
@@ -79,11 +90,30 @@ public class PlayerActivity extends AppCompatActivity {
                 .setMediaMetadata(new MediaMetadata.Builder().setTitle(label).build())
                 .build();
 
-        player = new ExoPlayer.Builder(this).build();
+        player = buildPlayer();
         player.setMediaItem(localItem);
         player.prepare();
         player.setPlayWhenReady(true);
         view.setPlayer(player);
+        view.setKeepScreenOn(true);
+        player.addListener(new Player.Listener() {
+            @Override public void onPlayerError(PlaybackException error) {
+                if (!casting) scheduleReconnect(R.string.player_reconnecting);
+            }
+
+            @Override public void onPlaybackStateChanged(int state) {
+                if (casting) return;
+                if (state == Player.STATE_ENDED) {
+                    scheduleReconnect(R.string.player_reconnecting_end);
+                }
+            }
+
+            @Override public void onIsPlayingChanged(boolean isPlaying) {
+                // Solo damos por buena la conexion tras 30 s seguidos reproduciendo.
+                retryHandler.removeCallbacks(resetReconnects);
+                if (isPlaying && !casting) retryHandler.postDelayed(resetReconnects, 30000);
+            }
+        });
 
         findViewById(R.id.vlc).setOnClickListener(v -> openInVlc());
         fullscreenBtn.setOnClickListener(v -> setFullscreen(!fullscreen));
@@ -111,6 +141,59 @@ public class PlayerActivity extends AppCompatActivity {
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         outState.putBoolean(STATE_FULLSCREEN, fullscreen);
+    }
+
+    // ------------------------------------------------------------------
+    // Reproductor y reconexion
+    // ------------------------------------------------------------------
+    private ExoPlayer buildPlayer() {
+        // Mas margen que los 8 s por defecto: el CDN a veces tarda en servir un
+        // segmento, y el proxy ahora lo reenvia en streaming segun llega.
+        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
+                .setConnectTimeoutMs(15000)
+                .setReadTimeoutMs(30000)
+                .setAllowCrossProtocolRedirects(true)
+                .setUserAgent("SportStreaming");
+        DefaultMediaSourceFactory media = new DefaultMediaSourceFactory(http)
+                .setLoadErrorHandlingPolicy(new DefaultLoadErrorHandlingPolicy(5));
+        return new ExoPlayer.Builder(this)
+                .setMediaSourceFactory(media)
+                .build();
+    }
+
+    /** Un fallo de red/CDN no debe dejar el partido parado: reintenta con espera creciente. */
+    private void scheduleReconnect(int messageRes) {
+        if (pendingRetry != null || isFinishing() || isDestroyed()) return;
+        if (reconnects >= MAX_RECONNECTS) {
+            Toast.makeText(this, R.string.player_give_up, Toast.LENGTH_LONG).show();
+            return;
+        }
+        reconnects++;
+        if (reconnects == 1 || reconnects == MAX_RECONNECTS) {
+            Toast.makeText(this, messageRes, Toast.LENGTH_SHORT).show();
+        }
+        long delay = Math.min(10000L, 1000L * reconnects);
+        pendingRetry = () -> {
+            pendingRetry = null;
+            reload();
+        };
+        retryHandler.postDelayed(pendingRetry, delay);
+    }
+
+    private void reload() {
+        if (player == null || isFinishing() || isDestroyed()) return;
+        final long streamId = sid;
+        new Thread(() -> {
+            // Refresca la URL CDN caducada y el salt/referer antes de reintentar.
+            ProxyService.refreshStreamInfo(streamId);
+            ProxyService.refreshParamsNow();
+            runOnUiThread(() -> {
+                if (player == null || isFinishing() || isDestroyed()) return;
+                player.setMediaItem(localItem);
+                player.prepare();
+                player.play();
+            });
+        }, "player-reconnect").start();
     }
 
     // ------------------------------------------------------------------
@@ -196,6 +279,7 @@ public class PlayerActivity extends AppCompatActivity {
     /** Envia la playlist al receptor (la TV la lee del proxy via red local). */
     private void startCastPlayback(String lanUrl) {
         if (castPlayer == null || player == null) return;
+        cancelRetry();
         player.pause();
         MediaItem item = new MediaItem.Builder()
                 .setUri(lanUrl)
@@ -221,6 +305,7 @@ public class PlayerActivity extends AppCompatActivity {
     private void switchToLocal() {
         if (player == null || !casting) return;
         casting = false;
+        reconnects = 0;
         player.setMediaItem(localItem);
         player.prepare();
         player.play();
@@ -255,8 +340,18 @@ public class PlayerActivity extends AppCompatActivity {
         super.onStop();
     }
 
+    private void cancelRetry() {
+        if (pendingRetry != null) {
+            retryHandler.removeCallbacks(pendingRetry);
+            pendingRetry = null;
+        }
+        retryHandler.removeCallbacks(resetReconnects);
+    }
+
     @Override
     protected void onDestroy() {
+        cancelRetry();
+        retryHandler.removeCallbacksAndMessages(null);
         if (player != null) {
             player.release();
             player = null;

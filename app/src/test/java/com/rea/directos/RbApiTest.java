@@ -3,6 +3,7 @@ package com.rea.directos;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
@@ -47,5 +48,17 @@ public class RbApiTest {
     @Test
     public void resolveSegmentUrlFailsWithoutCslParams() {
         assertNull(RbApi.resolveSegmentUrl("https://x.example/a/b.ts", "00"));
+    }
+
+    @Test
+    public void resolveSegmentUrlsPruebaPrimeroLaRegionYDevuelveTodosLosHosts() {
+        String seg = "https://fhlsport954.example/cfall/s2001/v3b/x/index.m3u8"
+                + "?_ctump=ABCDEFGHI1p6L2MNLF5yrTSgpTkyYzAioFkSIF1SHmcwMxOvYzI4LJ1joTHhL29g"
+                + "&_ctuph=ABCDEFGHY3LiLF9mMJphqUZ%2FK3Mypw0k";
+        java.util.List<String[]> urls = RbApi.resolveSegmentUrls(seg, "00");
+        assertEquals(2, urls.size());
+        assertTrue(urls.get(0)[0].startsWith("https://b.example.com/"));
+        assertTrue(urls.get(1)[0].startsWith("https://a.example.com/"));
+        assertEquals("cf", urls.get(0)[1]);
     }
 }

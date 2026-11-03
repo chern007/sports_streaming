@@ -1,8 +1,13 @@
 package com.rea.directos;
 
+import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
+import java.io.FilterInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
@@ -23,6 +28,10 @@ public class ProxyServer extends NanoHTTPD {
 
     public interface Provider {
         StreamInfo stream(long sid);
+        /** Vuelve a pedir stream/detail y actualiza la URL CDN (por si el token caduco). */
+        StreamInfo refreshStream(long sid);
+        /** Vuelve a leer salt/referer de /api/common/params. */
+        void refreshParams();
         String salt();
         String referer();
         List<StreamInfo> streamList();
@@ -32,8 +41,11 @@ public class ProxyServer extends NanoHTTPD {
     private static final Pattern PLAYLIST = Pattern.compile("^/go/(\\d+)/index\\.m3u8$");
     private static final Pattern SEGMENT = Pattern.compile("^/go/(\\d+)/seg$");
     private static final Pattern KEY_URI = Pattern.compile("URI=\"([^\"]+)\"", Pattern.CASE_INSENSITIVE);
+    private static final int MAX_SEG_ATTEMPTS = 3;
 
     private final Provider provider;
+    /** Ultimo host/tipo que fallo (igual que la app original: se prueba otro antes). */
+    private volatile String lastFailedType;
 
     public ProxyServer(int port, Provider provider) {
         super(port);
@@ -160,14 +172,31 @@ public class ProxyServer extends NanoHTTPD {
         h.put("user-agent", RbApi.UA);
         h.put("accept", "*/*");
         Http.Resp r = Http.get(info.cdn, h);
+        if (r.status != 200 || !looksLikePlaylist(r.body)) {
+            // La URL del CDN lleva token y caduca: se vuelve a resolver una vez.
+            StreamInfo fresh = provider.refreshStream(sid);
+            if (fresh != null && fresh.cdn != null && !fresh.cdn.equals(info.cdn)) {
+                info = fresh;
+                r = Http.get(info.cdn, h);
+            }
+        }
         if (r.status != 200) {
             return text(BAD_GATEWAY, "playlist CDN status=" + r.status);
+        }
+        if (!looksLikePlaylist(r.body)) {
+            return text(BAD_GATEWAY, "playlist CDN no valida");
         }
         String body = new String(r.body, StandardCharsets.UTF_8);
         byte[] data = rewritePlaylist(body, info.cdn, sid, base(session)).getBytes(StandardCharsets.UTF_8);
         Response resp = ranged(session, data, "application/vnd.apple.mpegurl");
         resp.addHeader("Cache-Control", "no-cache, no-store");
         return resp;
+    }
+
+    private static boolean looksLikePlaylist(byte[] body) {
+        if (body == null || body.length == 0) return false;
+        String s = new String(body, StandardCharsets.UTF_8).replace("\uFEFF", "").trim();
+        return s.startsWith("#EXTM3U");
     }
 
     private Response segment(long sid, IHTTPSession session) throws Exception {
@@ -183,10 +212,72 @@ public class ProxyServer extends NanoHTTPD {
         if (segFull == null) {
             return text(Response.Status.BAD_REQUEST, "u invalido");
         }
-        String[] res = RbApi.resolveSegmentUrl(segFull, provider.salt());
-        if (res == null) {
+        List<String[]> candidates = RbApi.resolveSegmentUrls(segFull, provider.salt());
+        if (candidates.isEmpty()) {
             return text(BAD_GATEWAY, "segmento sin CSL");
         }
+        candidates = preferOtherThanLastFailed(candidates);
+
+        boolean refreshedParams = false;
+        String lastStatus = "?";
+        int attempts = Math.min(MAX_SEG_ATTEMPTS, Math.max(2, candidates.size()));
+        for (int i = 0; i < attempts; i++) {
+            // Se recalcula por si refreshParams() ha cambiado el salt.
+            candidates = preferOtherThanLastFailed(
+                    RbApi.resolveSegmentUrls(segFull, provider.salt()));
+            if (candidates.isEmpty()) break;
+            String[] cand = candidates.get(i % candidates.size());
+            Http.Stream stream = null;
+            try {
+                stream = Http.open(cand[0], segmentHeaders());
+                lastStatus = String.valueOf(stream.status);
+                if (stream.status != 200 && stream.status != 206) {
+                    int code = stream.status;
+                    lastFailedType = cand[1];
+                    closeQuietly(stream);
+                    if ((code == 401 || code == 403) && !refreshedParams) {
+                        // El salt o el referer pueden haber rotado.
+                        provider.refreshParams();
+                        refreshedParams = true;
+                    }
+                    continue;
+                }
+                BufferedInputStream in = new BufferedInputStream(stream.body, 8192);
+                in.mark(1);
+                int firstByte = in.read();
+                in.reset();
+                if (firstByte < 0) {
+                    lastFailedType = cand[1];
+                    closeQuietly(stream);
+                    lastStatus = "vacio";
+                    continue;
+                }
+                String mime;
+                if (firstByte == 0x47) {
+                    mime = "video/mp2t";
+                } else {
+                    mime = stream.contentType == null ? "application/octet-stream" : stream.contentType;
+                    if (mime.toLowerCase(Locale.ROOT).contains("text/html")) {
+                        lastFailedType = cand[1];
+                        closeQuietly(stream);
+                        lastStatus = "html";
+                        continue;
+                    }
+                }
+                // Se reenvia el cuerpo segun llega: asi el reproductor no agota su
+                // timeout aunque el CDN tarde 20 s en completar el segmento.
+                Response resp = streamResponse(stream, mime, in);
+                resp.addHeader("Cache-Control", "no-cache, no-store");
+                return resp;
+            } catch (Exception e) {
+                closeQuietly(stream);
+                lastStatus = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            }
+        }
+        return text(BAD_GATEWAY, "CDN no disponible (" + lastStatus + ")");
+    }
+
+    private Map<String, String> segmentHeaders() {
         Map<String, String> h = new HashMap<>();
         h.put("user-agent", RbApi.UA);
         String ref = provider.referer();
@@ -195,22 +286,53 @@ public class ProxyServer extends NanoHTTPD {
             h.put("origin", ref.endsWith("/") ? ref.substring(0, ref.length() - 1) : ref);
         }
         h.put("accept", "*/*");
-        Http.Resp r = Http.get(res[0], h);
-        if (r.status != 200 || r.body.length == 0) {
-            return text(BAD_GATEWAY, "CDN " + r.status + " len=" + r.body.length);
+        return h;
+    }
+
+    private List<String[]> preferOtherThanLastFailed(List<String[]> candidates) {
+        String failed = lastFailedType;
+        if (failed == null || failed.isEmpty() || candidates.size() < 2) return candidates;
+        List<String[]> first = new ArrayList<>();
+        List<String[]> last = new ArrayList<>();
+        for (String[] c : candidates) {
+            if (failed.equals(c[1])) last.add(c);
+            else first.add(c);
         }
-        String mime;
-        if ((r.body[0] & 0xFF) == 0x47) {
-            mime = "video/mp2t";
-        } else {
-            mime = r.contentType == null ? "application/octet-stream" : r.contentType;
-            if (mime.toLowerCase(Locale.ROOT).contains("text/html")) {
-                return text(BAD_GATEWAY, "contenido inesperado del CDN");
+        first.addAll(last);
+        return first;
+    }
+
+    /** Respuesta con el cuerpo en streaming (Content-Length si el CDN lo da). */
+    private static Response streamResponse(Http.Stream stream, String mime, InputStream in) {
+        InputStream body = new FilterInputStream(in) {
+            @Override public int read() throws IOException {
+                int r = super.read();
+                if (r < 0) close();
+                return r;
             }
+
+            @Override public int read(byte[] b, int off, int len) throws IOException {
+                int r = super.read(b, off, len);
+                if (r < 0) close();
+                return r;
+            }
+
+            @Override public void close() throws IOException {
+                try {
+                    super.close();
+                } finally {
+                    stream.close();
+                }
+            }
+        };
+        if (stream.contentLength >= 0) {
+            return newFixedLengthResponse(Response.Status.OK, mime, body, stream.contentLength);
         }
-        Response resp = ranged(session, r.body, mime);
-        resp.addHeader("Cache-Control", "no-cache, no-store");
-        return resp;
+        return newChunkedResponse(Response.Status.OK, mime, body);
+    }
+
+    private static void closeQuietly(Http.Stream stream) {
+        if (stream != null) stream.close();
     }
 
     /** Responde 200 completo o 206 parcial segun la cabecera Range del cliente. */
