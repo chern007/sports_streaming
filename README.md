@@ -14,6 +14,22 @@ segmentos "bru" del CDN y reescribirlos como HLS normal).
   - **página de diagnóstico** del proxy: `http://<IP-del-móvil>:8899/` (la URL aparece en la
     notificación) con los canales resueltos y las últimas peticiones recibidas.
 
+## Cambios v1.2.1 (cortes en directo)
+
+- **Proxy en streaming**: antes descargaba el segmento entero (~0,5–1 MB) y solo
+  entonces respondía. El CDN a veces tarda 10–20 s en completar un segmento, así
+  que ExoPlayer agotaba su timeout de 8 s y el partido se quedaba parado. Ahora el
+  proxy reenvía los bytes según llegan (TTFB normal < 3 s).
+- **Timeouts y reintentos**: ExoPlayer pasa a 15 s de conexión / 30 s de lectura y
+  5 reintentos por carga; el proxy prueba hasta 3 hosts del `_ctump` y refresca
+  `salt`/`referer` si el CDN responde 401/403.
+- **URL CDN caducada**: si la playlist falla, el proxy vuelve a pedir
+  `stream/detail` y actualiza la URL con token.
+- **Reconexión automática**: si aun así se corta, el reproductor reintenta con
+  espera creciente (hasta 8 veces) y avisa con un aviso en pantalla.
+- **Compatibilidad con la app original 3.0.323**: el UA y la versión se leen de
+  Firestore (`versionInfo`), no están fijados a 3.0.320.
+
 ## Instalación
 
 1. Ve a la pestaña **Releases** de este repositorio.
