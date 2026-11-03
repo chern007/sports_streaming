@@ -46,9 +46,13 @@ public class PlayerActivity extends AppCompatActivity {
     private static final int MAX_RECONNECTS = 8;
 
     private final Handler retryHandler = new Handler(Looper.getMainLooper());
-    private final Runnable resetReconnects = () -> reconnects = 0;
+    private final Runnable resetReconnects = () -> {
+        reconnects = 0;
+        gaveUp = false;
+    };
     private Runnable pendingRetry;
     private int reconnects;
+    private boolean gaveUp;
 
     public static void start(Context ctx, long sid, String label) {
         Intent i = new Intent(ctx, PlayerActivity.class);
@@ -165,7 +169,10 @@ public class PlayerActivity extends AppCompatActivity {
     private void scheduleReconnect(int messageRes) {
         if (pendingRetry != null || isFinishing() || isDestroyed()) return;
         if (reconnects >= MAX_RECONNECTS) {
-            Toast.makeText(this, R.string.player_give_up, Toast.LENGTH_LONG).show();
+            if (!gaveUp) {
+                gaveUp = true;
+                Toast.makeText(this, R.string.player_give_up, Toast.LENGTH_LONG).show();
+            }
             return;
         }
         reconnects++;
@@ -306,6 +313,7 @@ public class PlayerActivity extends AppCompatActivity {
         if (player == null || !casting) return;
         casting = false;
         reconnects = 0;
+        gaveUp = false;
         player.setMediaItem(localItem);
         player.prepare();
         player.play();
@@ -336,6 +344,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     @Override
     protected void onStop() {
+        cancelRetry();
         if (player != null) player.pause();
         super.onStop();
     }
