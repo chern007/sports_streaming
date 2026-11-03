@@ -13,6 +13,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -46,6 +47,9 @@ public class ProxyServer extends NanoHTTPD {
     private final Provider provider;
     /** Ultimo host/tipo que fallo (igual que la app original: se prueba otro antes). */
     private volatile String lastFailedType;
+    /** Evita pedir stream/detail o params en cada reintento del reproductor. */
+    private final Map<Long, Long> lastStreamRefresh = new ConcurrentHashMap<>();
+    private volatile long lastParamsRefresh;
 
     public ProxyServer(int port, Provider provider) {
         super(port);
@@ -174,7 +178,7 @@ public class ProxyServer extends NanoHTTPD {
         Http.Resp r = Http.get(info.cdn, h);
         if (r.status != 200 || !looksLikePlaylist(r.body)) {
             // La URL del CDN lleva token y caduca: se vuelve a resolver una vez.
-            StreamInfo fresh = provider.refreshStream(sid);
+            StreamInfo fresh = refreshStreamThrottled(sid, info);
             if (fresh != null && fresh.cdn != null && !fresh.cdn.equals(info.cdn)) {
                 info = fresh;
                 r = Http.get(info.cdn, h);
@@ -237,7 +241,7 @@ public class ProxyServer extends NanoHTTPD {
                     closeQuietly(stream);
                     if ((code == 401 || code == 403) && !refreshedParams) {
                         // El salt o el referer pueden haber rotado.
-                        provider.refreshParams();
+                        refreshParamsThrottled();
                         refreshedParams = true;
                     }
                     continue;
@@ -287,6 +291,23 @@ public class ProxyServer extends NanoHTTPD {
         }
         h.put("accept", "*/*");
         return h;
+    }
+
+    /** stream/detail como maximo una vez cada 5 s por canal. */
+    private StreamInfo refreshStreamThrottled(long sid, StreamInfo current) {
+        long now = System.currentTimeMillis();
+        Long last = lastStreamRefresh.get(sid);
+        if (last != null && now - last < 5000) return current;
+        lastStreamRefresh.put(sid, now);
+        return provider.refreshStream(sid);
+    }
+
+    /** /api/common/params como maximo una vez cada 5 s. */
+    private void refreshParamsThrottled() {
+        long now = System.currentTimeMillis();
+        if (now - lastParamsRefresh < 5000) return;
+        lastParamsRefresh = now;
+        provider.refreshParams();
     }
 
     private List<String[]> preferOtherThanLastFailed(List<String[]> candidates) {
