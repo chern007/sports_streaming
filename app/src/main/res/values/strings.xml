@@ -24,4 +24,7 @@
     <string name="proxy_starting">Iniciando…</string>
     <string name="proxy_notif">Proxy activo (puerto %1$d)</string>
     <string name="proxy_notif_diag">Proxy activo · diagnóstico: %1$s</string>
+    <string name="player_reconnecting">Se cortó la reproducción. Reconectando…</string>
+    <string name="player_reconnecting_end">El directo se detuvo. Reconectando…</string>
+    <string name="player_give_up">No se pudo reconectar. Vuelve a abrir el canal.</string>
 </resources>

@@ -10,9 +10,11 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Port de tools/rb_live.py: descubrimiento de configuracion (Firestore + /api/common/params),
@@ -25,7 +27,7 @@ public final class RbApi {
     // ------------------------------------------------------------------
     // Configuracion base (se auto-actualiza desde Firestore)
     // ------------------------------------------------------------------
-    public static final String FALLBACK_DATA_API = "https://apis-data10.tcpwe138stya.ru";
+    public static final String FALLBACK_DATA_API = "https://apis-data10.tcllu137fien.ru";
     public static final String[] FALLBACK_FOTH_DOMAINS = {
             "https://jack01eo.mpanrc4imind.my/",
             "https://nadia73bc.mp77g69ainei3gx2voxygen.ru/",
@@ -39,7 +41,14 @@ public final class RbApi {
             "https://firestore.googleapis.com/v1/projects/" + FIREBASE_PROJECT
                     + "/databases/(default)/documents/foth_APP_KVS/params_production?key=" + FIREBASE_API_KEY;
 
-    public static final String UA = "rbapp/--dg-foth-app-320/3.0.320/12/13/UTC/en";
+    /**
+     * UA de la app original. Se actualiza al arrancar leyendo {@code versionInfo}
+     * de Firestore, para no quedarnos anclados en la version 3.0.320.
+     */
+    public static volatile int APP_VERSION_CODE = 323;
+    public static volatile String APP_VERSION_NAME = "3.0.323";
+    public static volatile String UA =
+            "rbapp/--dg-foth-app-323/3.0.323/12/13/UTC/en";
 
     private static final String API_ORIGIN = "https://hksc4ctu.buzz";
 
@@ -172,48 +181,82 @@ public final class RbApi {
         return out;
     }
 
-    /** _ctump decodificado: 'REGION:tipo@host' o lista separada por comas. Prefiere EU-ES/ES/EU/WW. */
-    public static String cslHostFromCtump(String ctump) {
+    /** _ctump decodificado -> lista de {region, tipo, host}. */
+    static List<String[]> cslEntries(String ctump) {
         List<String[]> entries = new ArrayList<>();
+        if (ctump == null) return entries;
         for (String part : ctump.split(",")) {
             String p = part.trim();
             int colon = p.indexOf(':');
-            int at = p.indexOf('@');
-            if (colon < 0 || at < 0 || at < colon) continue;
+            if (colon < 0) continue;
+            int at = p.indexOf('@', colon + 1);
+            if (at < 0) continue;
             String reg = p.substring(0, colon).trim().toUpperCase(java.util.Locale.ROOT);
-            int at2 = p.indexOf('@', colon + 1);
-            if (at2 < 0) continue;
-            String host = p.substring(at2 + 1).trim();
-            if (!host.isEmpty()) entries.add(new String[]{reg, host});
+            String type = p.substring(colon + 1, at).trim();
+            String host = p.substring(at + 1).trim();
+            if (!host.isEmpty()) entries.add(new String[]{reg, type, host});
         }
-        for (String want : new String[]{"EU-ES", "ES", "EU", "WW"}) {
-            for (String[] e : entries) {
-                if (e[0].equals(want)) return e[1];
-            }
-        }
-        return entries.isEmpty() ? null : entries.get(0)[1];
+        return entries;
     }
 
-    /** Construye la URL CSL final de un segmento. Devuelve [urlConS2, host] o null. */
-    public static String[] resolveSegmentUrl(String segFullUrl, String salt) {
+    /** Ordena los hosts igual que la app: EU-ES, ES, EU, WW y despues el resto. */
+    private static List<String[]> orderByRegion(List<String[]> entries) {
+        List<String[]> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (String want : new String[]{"EU-ES", "ES", "EU", "WW"}) {
+            for (String[] e : entries) {
+                String key = e[0] + "|" + e[1] + "|" + e[2];
+                if (e[0].equals(want) && seen.add(key)) out.add(e);
+            }
+        }
+        for (String[] e : entries) {
+            String key = e[0] + "|" + e[1] + "|" + e[2];
+            if (seen.add(key)) out.add(e);
+        }
+        return out;
+    }
+
+    /** _ctump decodificado: 'REGION:tipo@host' o lista separada por comas. Prefiere EU-ES/ES/EU/WW. */
+    public static String cslHostFromCtump(String ctump) {
+        List<String[]> entries = orderByRegion(cslEntries(ctump));
+        return entries.isEmpty() ? null : entries.get(0)[2];
+    }
+
+    /**
+     * Todas las URLs candidatas de un segmento (un host por entrada de _ctump),
+     * para poder reintentar en otro host si el CDN falla. Devuelve [urlConS2, tipo].
+     */
+    public static List<String[]> resolveSegmentUrls(String segFullUrl, String salt) {
+        List<String[]> out = new ArrayList<>();
         Map<String, String> q = parseQuery(segFullUrl);
         String ctump = bruDecode(q.get("_ctump"));
         String ctuph = bruDecode(q.get("_ctuph"));
-        if (ctump == null || ctuph == null) return null;
-        String host = cslHostFromCtump(ctump);
-        if (host == null) return null;
+        if (ctump == null || ctuph == null) return out;
         String path = ctuph.startsWith("/") ? ctuph : "/" + ctuph;
-        String url = "https://" + host + path;
         String last = path;
         int slash = last.lastIndexOf('/');
         if (slash >= 0) last = last.substring(slash + 1);
         int qm = last.indexOf('?');
         if (qm >= 0) last = last.substring(0, qm);
-        String ver = parseQuery(url).get("_ver");
+        String ver = parseQuery(path).get("_ver");
         if (ver == null) ver = "";
         String s2 = md5Hex(last + "," + ver + "," + salt);
-        String joined = url + (url.indexOf('?') >= 0 ? "&" : "?") + "_s2=" + s2;
-        return new String[]{joined, host};
+        Set<String> seen = new HashSet<>();
+        for (String[] e : orderByRegion(cslEntries(ctump))) {
+            String url = "https://" + e[2] + path;
+            String joined = url + (url.indexOf('?') >= 0 ? "&" : "?") + "_s2=" + s2;
+            if (seen.add(joined)) out.add(new String[]{joined, e[1]});
+        }
+        return out;
+    }
+
+    /** Construye la URL CSL final de un segmento. Devuelve [urlConS2, host] o null. */
+    public static String[] resolveSegmentUrl(String segFullUrl, String salt) {
+        List<String[]> urls = resolveSegmentUrls(segFullUrl, salt);
+        if (urls.isEmpty()) return null;
+        String ctump = bruDecode(parseQuery(segFullUrl).get("_ctump"));
+        String host = cslHostFromCtump(ctump);
+        return new String[]{urls.get(0)[0], host};
     }
 
     // ------------------------------------------------------------------
@@ -289,6 +332,7 @@ public final class RbApi {
             Http.Resp r = Http.get(FIRESTORE_DOC, null);
             if (r.status == 200) {
                 JSONObject doc = new JSONObject(new String(r.body, StandardCharsets.UTF_8));
+                applyVersionInfo(doc);
                 String v = doc.getJSONObject("fields").getJSONObject("DATA_API").getString("stringValue");
                 if (v != null && !v.isEmpty()) {
                     while (v.endsWith("/")) v = v.substring(0, v.length() - 1);
@@ -298,6 +342,25 @@ public final class RbApi {
         } catch (Exception ignored) {
         }
         return FALLBACK_DATA_API;
+    }
+
+    /** Lee {@code versionInfo} (vCode/vName) y actualiza el UA de la app original. */
+    private static void applyVersionInfo(JSONObject doc) {
+        try {
+            JSONObject fields = doc.optJSONObject("fields");
+            JSONObject vi = fields == null ? null : fields.optJSONObject("versionInfo");
+            String raw = vi == null ? null : vi.optString("stringValue", null);
+            if (raw == null || raw.isEmpty()) return;
+            JSONObject v = new JSONObject(raw);
+            int code = v.optInt("vCode", APP_VERSION_CODE);
+            String name = v.optString("vName", APP_VERSION_NAME);
+            if (code > 0 && name != null && !name.isEmpty()) {
+                APP_VERSION_CODE = code;
+                APP_VERSION_NAME = name;
+                UA = "rbapp/--dg-foth-app-" + code + "/" + name + "/12/13/UTC/en";
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     /** Devuelve [salt, referer] desde /api/common/params (rot47-json). */

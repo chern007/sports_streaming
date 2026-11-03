@@ -65,11 +65,48 @@ public class ProxyService extends Service {
 
     private final ProxyServer.Provider provider = new ProxyServer.Provider() {
         @Override public StreamInfo stream(long sid) { return STREAMS.get(sid); }
+        @Override public StreamInfo refreshStream(long sid) { return refreshStreamInfo(sid); }
+        @Override public void refreshParams() { refreshParamsNow(); }
         @Override public String salt() { return salt; }
         @Override public String referer() { return referer; }
         @Override public List<StreamInfo> streamList() { return new ArrayList<>(STREAMS.values()); }
         @Override public String phoneIp() { return wifiIpv4(ProxyService.this); }
     };
+
+    /**
+     * Re-resuelve un canal (stream/detail) para refrescar la URL CDN caducada.
+     * Es seguro llamarlo desde el proxy o desde el reproductor.
+     */
+    public static StreamInfo refreshStreamInfo(long sid) {
+        StreamInfo cur = STREAMS.get(sid);
+        if (cur == null || cur.matchId <= 0 || dataApi == null) return cur;
+        try {
+            StreamInfo fresh = RbApi.streamDetail(dataApi, cur.matchId, cur.sid, cur.siteType);
+            if (fresh != null && fresh.cdn != null) {
+                if (fresh.sid <= 0) fresh.sid = cur.sid;
+                if (fresh.siteType <= 0) fresh.siteType = cur.siteType;
+                if (fresh.name == null || fresh.name.isEmpty()) fresh.name = cur.name;
+                fresh.matchId = cur.matchId;
+                STREAMS.put(sid, fresh);
+                return fresh;
+            }
+        } catch (Exception ignored) {
+        }
+        return cur;
+    }
+
+    /** Reload salt/referer from /api/common/params (rotan de vez en cuando). */
+    public static void refreshParamsNow() {
+        if (dataApi == null) return;
+        try {
+            String[] p = RbApi.fetchParams(dataApi);
+            if (p != null && p.length >= 2) {
+                salt = p[0];
+                referer = p[1];
+            }
+        } catch (Exception ignored) {
+        }
+    }
 
     // ------------------------------------------------------------------
     // API estatica (misma app, mismo proceso)

@@ -1,6 +1,8 @@
 package com.rea.directos;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.util.Map;
@@ -21,6 +23,32 @@ public final class Http {
         public int status;
         public byte[] body = new byte[0];
         public String contentType;
+    }
+
+    /**
+     * Respuesta abierta para reenviar el cuerpo sin esperar a descargarlo entero.
+     * Es clave para los segmentos lentos del CDN: si el proxy espera a tener el
+     * segmento completo, el reproductor puede agotar su timeout de lectura.
+     */
+    public static final class Stream {
+        public int status;
+        public String contentType;
+        public long contentLength = -1;
+        public InputStream body;
+        private Response response;
+
+        public void close() {
+            try {
+                if (body != null) body.close();
+            } catch (IOException ignored) {
+            }
+            try {
+                if (response != null) response.close();
+            } catch (Exception ignored) {
+            }
+            body = null;
+            response = null;
+        }
     }
 
     private static volatile OkHttpClient client;
@@ -53,9 +81,11 @@ public final class Http {
             return new OkHttpClient.Builder()
                     .sslSocketFactory(ctx.getSocketFactory(), tm)
                     .hostnameVerifier((hostname, session) -> true)
-                    .connectTimeout(20, TimeUnit.SECONDS)
-                    .readTimeout(30, TimeUnit.SECONDS)
-                    .writeTimeout(30, TimeUnit.SECONDS)
+                    .connectTimeout(15, TimeUnit.SECONDS)
+                    // Es el margen entre trozos, no el tiempo total: con el proxy
+                    // en streaming los datos empiezan a llegar enseguida.
+                    .readTimeout(25, TimeUnit.SECONDS)
+                    .writeTimeout(25, TimeUnit.SECONDS)
                     .retryOnConnectionFailure(true)
                     .build();
         } catch (Exception e) {
@@ -77,5 +107,31 @@ public final class Http {
             out.contentType = r.header("Content-Type");
             return out;
         }
+    }
+
+    /**
+     * Abre la conexión y deja el cuerpo sin leer, para ir copiándolo al cliente.
+     * El llamador es responsable de cerrar el {@link Stream}.
+     */
+    public static Stream open(String url, Map<String, String> headers) throws IOException {
+        Request.Builder b = new Request.Builder().url(url).get();
+        if (headers != null) {
+            for (Map.Entry<String, String> e : headers.entrySet()) {
+                b.header(e.getKey(), e.getValue());
+            }
+        }
+        Response r = client().newCall(b.build()).execute();
+        Stream out = new Stream();
+        out.response = r;
+        out.status = r.code();
+        out.contentType = r.header("Content-Type");
+        if (r.body() != null) {
+            out.contentLength = r.body().contentLength();
+            out.body = r.body().byteStream();
+        } else {
+            out.contentLength = 0;
+            out.body = new ByteArrayInputStream(new byte[0]);
+        }
+        return out;
     }
 }
