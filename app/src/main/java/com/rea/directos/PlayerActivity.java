@@ -30,7 +30,6 @@ import androidx.media3.exoplayer.DefaultLivePlaybackSpeedControl;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
-import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
 
 import com.google.android.gms.cast.framework.CastContext;
@@ -260,12 +259,10 @@ public class PlayerActivity extends AppCompatActivity {
         bottomBar.setVisibility(on ? View.GONE : View.VISIBLE);
         if (on) {
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
-            view.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_ZOOM);
             c.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
             c.hide(WindowInsetsCompat.Type.systemBars());
         } else {
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-            view.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT);
             c.show(WindowInsetsCompat.Type.systemBars());
         }
         fullscreenBtn.setImageResource(on ? R.drawable.ic_fullscreen_exit : R.drawable.ic_fullscreen);
