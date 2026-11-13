@@ -64,9 +64,9 @@ Detalles clave del port:
 - El proxy responde **HEAD sin cuerpo** (parche a un fallo conocido de NanoHTTPD 2.3.1 que
   adjuntaba el cuerpo y corrompía la conexión), soporta `Range` (respuestas 206) y añade
   `Access-Control-Allow-Private-Network` para receptores Chromium modernos.
-- Antes de enviar al Chromecast la app hace una **autoprueba** del proxy por la IP LAN (socket
-  crudo: la config de red bloquea OkHttp a IPs LAN) y muestra un aviso claro si falla; los
-  errores del receptor también se notifican con un aviso.
+- La app envía la playlist al receptor como **HLS en directo**. El móvil sigue reproduciendo
+  hasta que el receptor confirma que reproduce el canal. Si falla, el diagnóstico muestra
+  el código que devuelve Cast o indica que se agotó la espera.
 - UA `rbapp/--dg-foth-app-320/3.0.320/12/13/UTC/en` + `origin/referer` en las llamadas a la API.
 - VLC (otra app) puede leer `http://127.0.0.1:8899/...` porque el proxy corre en un
   foreground service; hay un botón "Detener" en la notificación.
@@ -81,9 +81,8 @@ Detalles clave del port:
    misma red WiFi y que el router no tenga activado "aislamiento de clientes/AP".
 3. Si aparecen peticiones del TV con estado **502** → el CDN rechazó la petición (canal
    caducado): vuelve a abrir el canal en la app y reintenta.
-4. Nota: el botón "Ver en VLC" abre VLC con la URL `127.0.0.1` (solo válida en el móvil). Si
-   desde VLC intentas reproducir en el Chromecast, esa URL no vale para el televisor: usa el
-   botón **Chromecast de la app**.
+4. **Ver en VLC** abre el canal en el móvil. También puedes enviar el vídeo desde el botón
+   de Chromecast de VLC.
 
 ## Compilación (GitHub Actions)
 

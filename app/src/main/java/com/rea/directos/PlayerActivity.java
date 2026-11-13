@@ -18,6 +18,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
+import androidx.mediarouter.app.MediaRouteButton;
 import androidx.media3.cast.CastPlayer;
 import androidx.media3.cast.SessionAvailabilityListener;
 import androidx.media3.common.MediaItem;
@@ -32,7 +33,13 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
 import androidx.media3.ui.PlayerView;
 
+import com.google.android.gms.cast.MediaError;
+import com.google.android.gms.cast.MediaInfo;
+import com.google.android.gms.cast.MediaStatus;
+import com.google.android.gms.cast.framework.CastButtonFactory;
 import com.google.android.gms.cast.framework.CastContext;
+import com.google.android.gms.cast.framework.CastSession;
+import com.google.android.gms.cast.framework.media.RemoteMediaClient;
 
 /**
  * Reproductor in-app (ExoPlayer) con pantalla completa, boton para abrir el canal en VLC
@@ -49,6 +56,7 @@ public class PlayerActivity extends AppCompatActivity {
     private static final long BUFFER_CHECK_INTERVAL_MS = 1000;
     private static final long BUFFER_NO_PROGRESS_MS = 18000;
     private static final long MAX_BUFFERING_MS = 40000;
+    private static final long CAST_START_TIMEOUT_MS = 25000;
 
     private final Handler retryHandler = new Handler(Looper.getMainLooper());
     private final Runnable resetReconnects = () -> {
@@ -75,6 +83,7 @@ public class PlayerActivity extends AppCompatActivity {
     private ExoPlayer player;
     private CastPlayer castPlayer;
     private CastContext castContext;
+    private CastPlayback castPlayback;
     private PlayerView view;
     private ImageButton fullscreenBtn;
     private View bottomBar;
@@ -272,85 +281,54 @@ public class PlayerActivity extends AppCompatActivity {
     // Chromecast
     // ------------------------------------------------------------------
     private void initCast() {
+        MediaRouteButton button = findViewById(R.id.cast);
         try {
             castContext = CastContext.getSharedInstance(getApplicationContext());
-            castPlayer = new CastPlayer(castContext);
+            CastButtonFactory.setUpMediaRouteButton(this, button);
+            castPlayer = new CastPlayer(castContext, new LiveCastMedia());
             castPlayer.setSessionAvailabilityListener(new SessionAvailabilityListener() {
                 @Override public void onCastSessionAvailable() { switchToCast(); }
                 @Override public void onCastSessionUnavailable() { switchToLocal(); }
             });
-            castPlayer.addListener(new Player.Listener() {
-                @Override public void onPlayerError(PlaybackException error) {
-                    if (!casting) return;
-                    Toast.makeText(PlayerActivity.this,
-                            getString(R.string.cast_playback_error, error.getErrorCodeName()),
-                            Toast.LENGTH_LONG).show();
-                }
-            });
-            // Si ya hay una sesion de Cast activa (p. ej. al reabrir el reproductor), envia el canal.
-            if (castContext.getSessionManager().getCurrentCastSession() != null) {
-                switchToCast();
-            }
-        } catch (Throwable t) {
-            View b = findViewById(R.id.cast);
-            if (b != null) b.setVisibility(View.GONE);
+            if (castPlayer.isCastSessionAvailable()) switchToCast();
+        } catch (RuntimeException e) {
+            logCast("No se pudo configurar Cast: " + e.getClass().getSimpleName());
+            button.setVisibility(View.GONE);
         }
     }
 
-    /** Sesion de Cast conectada: comprueba el proxy en la red local y envia el canal al televisor. */
     private void switchToCast() {
-        if (castPlayer == null) return;
-        final String lanUrl = ProxyService.lanUrl(this, sid);
+        CastSession session = castContext.getSessionManager().getCurrentCastSession();
+        if (session == null || !session.isConnected() || isFinishing() || isDestroyed()) return;
+        RemoteMediaClient remote = session.getRemoteMediaClient();
+        if (remote == null || castPlayback != null) return;
+        String lanUrl = ProxyService.lanUrl(this, sid);
         if (lanUrl == null) {
             Toast.makeText(this, R.string.cast_need_wifi, Toast.LENGTH_LONG).show();
-            endCastSession();
+            castContext.getSessionManager().endCurrentSession(false);
             return;
         }
-        new Thread(() -> {
-            final int code = ProxyService.probeLan(lanUrl);
-            runOnUiThread(() -> {
-                if (isFinishing() || isDestroyed()) return;
-                if (code == 200) {
-                    startCastPlayback(lanUrl);
-                } else {
-                    Toast.makeText(PlayerActivity.this,
-                            getString(R.string.cast_probe_failed, lanUrl,
-                                    code < 0 ? getString(R.string.no_response) : String.valueOf(code)),
-                            Toast.LENGTH_LONG).show();
-                    endCastSession();
-                }
-            });
-        }, "cast-probe").start();
+        castPlayback = new CastPlayback(remote, lanUrl);
+        castPlayback.start();
     }
 
-    /** Envia la playlist al receptor (la TV la lee del proxy via red local). */
-    private void startCastPlayback(String lanUrl) {
-        if (castPlayer == null || player == null) return;
+    private void showCastPlayer() {
         casting = true;
         cancelRetry();
         stopBufferingCheck();
         player.pause();
-        MediaItem item = new MediaItem.Builder()
-                .setUri(lanUrl)
-                .setMimeType(MimeTypes.APPLICATION_M3U8)
-                .setMediaMetadata(new MediaMetadata.Builder().setTitle(label).build())
-                .build();
-        castPlayer.setMediaItem(item);
-        castPlayer.prepare();
-        castPlayer.play();
         view.setPlayer(castPlayer);
-        Toast.makeText(this, R.string.cast_sending, Toast.LENGTH_SHORT).show();
     }
 
-    private void endCastSession() {
-        try {
-            if (castContext != null) castContext.getSessionManager().endCurrentSession(false);
-        } catch (Exception ignored) {
-        }
+    private void logCast(String detail) {
+        RequestLog.add("Cast", "Chromecast /go/" + sid, 0, detail);
     }
 
-    /** Sesion de Cast cerrada: vuelve al reproductor local. */
     private void switchToLocal() {
+        if (castPlayback != null) {
+            castPlayback.close();
+            castPlayback = null;
+        }
         if (player == null || !casting) return;
         casting = false;
         reconnects = 0;
@@ -362,6 +340,80 @@ public class PlayerActivity extends AppCompatActivity {
             player.play();
         }
         view.setPlayer(player);
+    }
+
+    private final class CastPlayback extends RemoteMediaClient.Callback {
+        private final RemoteMediaClient remote;
+        private final String url;
+        private final Runnable timeout = () -> fail(getString(R.string.cast_start_timeout));
+        private boolean loadAccepted;
+
+        CastPlayback(RemoteMediaClient remote, String url) {
+            this.remote = remote;
+            this.url = url;
+        }
+
+        void start() {
+            remote.registerCallback(this);
+            if (isPlayingChannel()) {
+                showCastPlayer();
+                return;
+            }
+            logCast("Enviando HLS en directo a la TV");
+            Toast.makeText(PlayerActivity.this, R.string.cast_sending, Toast.LENGTH_SHORT).show();
+            retryHandler.postDelayed(timeout, CAST_START_TIMEOUT_MS);
+            remote.load(LiveCastMedia.loadRequest(url, label)).setResultCallback(result -> {
+                if (castPlayback != this) return;
+                MediaError error = result.getMediaError();
+                if (error != null) {
+                    onMediaError(error);
+                    return;
+                }
+                if (!result.getStatus().isSuccess()) {
+                    fail("Cast " + result.getStatus().getStatusCode());
+                    return;
+                }
+                loadAccepted = true;
+                onStatusUpdated();
+            });
+        }
+
+        private boolean isPlayingChannel() {
+            MediaInfo media = remote.getMediaInfo();
+            return remote.isPlaying() && media != null
+                    && (url.equals(media.getContentUrl()) || url.equals(media.getContentId()));
+        }
+
+        @Override public void onStatusUpdated() {
+            if (castPlayback != this) return;
+            if (!casting && loadAccepted && isPlayingChannel()) {
+                retryHandler.removeCallbacks(timeout);
+                logCast("La TV está reproduciendo el directo");
+                showCastPlayer();
+            } else if (casting && remote.getPlayerState() == MediaStatus.PLAYER_STATE_IDLE
+                    && remote.getIdleReason() == MediaStatus.IDLE_REASON_ERROR) {
+                fail("reproducción interrumpida");
+            }
+        }
+
+        @Override public void onMediaError(MediaError error) {
+            Integer code = error.getDetailedErrorCode();
+            fail(error.getType() + (code == null ? "" : " " + code));
+        }
+
+        private void fail(String reason) {
+            if (castPlayback != this) return;
+            logCast(reason);
+            Toast.makeText(PlayerActivity.this, getString(R.string.cast_playback_error, reason),
+                    Toast.LENGTH_LONG).show();
+            switchToLocal();
+            castContext.getSessionManager().endCurrentSession(true);
+        }
+
+        void close() {
+            retryHandler.removeCallbacks(timeout);
+            remote.unregisterCallback(this);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -420,13 +472,19 @@ public class PlayerActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        if (castPlayback != null) {
+            castPlayback.close();
+            castPlayback = null;
+        }
         cancelRetry();
         retryHandler.removeCallbacksAndMessages(null);
+        view.setPlayer(null);
         if (player != null) {
             player.release();
             player = null;
         }
         if (castPlayer != null) {
+            castPlayer.setSessionAvailabilityListener(null);
             castPlayer.release();
             castPlayer = null;
         }

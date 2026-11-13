@@ -22,15 +22,8 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.net.Inet4Address;
 import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.Socket;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -164,7 +157,8 @@ public class ProxyService extends Service {
             String best = null;
             for (Network network : cm.getAllNetworks()) {
                 NetworkCapabilities caps = cm.getNetworkCapabilities(network);
-                if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue;
+                if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                        || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue;
                 LinkProperties lp = cm.getLinkProperties(network);
                 if (lp == null) continue;
                 for (LinkAddress la : lp.getLinkAddresses()) {
@@ -179,40 +173,6 @@ public class ProxyService extends Service {
         } catch (Exception ignored) {
             return null;
         }
-    }
-
-    /**
-     * Comprueba desde el propio móvil que el proxy responde por la IP de la red local.
-     * Usa un socket crudo (OkHttp lo bloquearía: la app solo permite texto plano a 127.0.0.1).
-     * Devuelve el código HTTP (200 esperado) o -1 si no hubo respuesta.
-     */
-    public static int probeLan(String lanUrl) {
-        try {
-            URI u = new URI(lanUrl);
-            String host = u.getHost();
-            if (host == null) return -1;
-            int prt = u.getPort() > 0 ? u.getPort() : 80;
-            String path = u.getRawPath() == null || u.getRawPath().isEmpty() ? "/" : u.getRawPath();
-            if (u.getRawQuery() != null) path += "?" + u.getRawQuery();
-            try (Socket s = new Socket()) {
-                s.connect(new InetSocketAddress(host, prt), 4000);
-                s.setSoTimeout(8000);
-                OutputStream out = s.getOutputStream();
-                out.write(("GET " + path + " HTTP/1.1\r\nHost: " + host + ":" + prt
-                        + "\r\nUser-Agent: SportStreaming-probe\r\nConnection: close\r\n\r\n")
-                        .getBytes(StandardCharsets.US_ASCII));
-                out.flush();
-                BufferedReader in = new BufferedReader(
-                        new InputStreamReader(s.getInputStream(), StandardCharsets.US_ASCII));
-                String line = in.readLine();
-                if (line != null && line.startsWith("HTTP/")) {
-                    String[] parts = line.split(" ");
-                    if (parts.length >= 2) return Integer.parseInt(parts[1]);
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return -1;
     }
 
     // ------------------------------------------------------------------
