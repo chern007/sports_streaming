@@ -365,37 +365,42 @@ public final class RbApi {
 
     /** Devuelve [salt, referer] desde /api/common/params (rot47-json). */
     public static String[] fetchParams(String dataApi) {
+        String[] params = refreshParams(dataApi);
+        return params != null ? params : new String[]{FALLBACK_SALT, FALLBACK_FOTH_DOMAINS[0]};
+    }
+
+    static String[] refreshParams(String dataApi) {
         String salt = FALLBACK_SALT;
         String referer = FALLBACK_FOTH_DOMAINS[0];
         try {
             Map<String, String> h = new HashMap<>();
             h.put("user-agent", UA);
             h.put("accept", "*/*");
-            Http.Resp r = Http.get(dataApi + "/api/common/params", h);
-            if (r.status == 200) {
-                JSONObject params = new JSONObject(rot47(new String(r.body, StandardCharsets.UTF_8)));
-                String csl = optString(params, "common:cdnSmartLink:app");
-                if (csl != null) {
-                    JSONObject auth = new JSONObject(csl).optJSONObject("auth");
-                    if (auth != null) salt = auth.optString("salt", FALLBACK_SALT);
-                }
-                String gpd = optString(params, "g_player_domains");
-                if (gpd != null) {
-                    JSONArray foth = new JSONObject(gpd).optJSONArray("foth");
-                    if (foth != null) {
-                        for (int i = 0; i < foth.length(); i++) {
-                            String d = foth.optString(i, "");
-                            if (d.startsWith("http")) {
-                                referer = d.endsWith("/") ? d : d + "/";
-                                break;
-                            }
+            Http.Resp r = Http.getPlaybackMetadata(dataApi + "/api/common/params", h);
+            if (r.status != 200) return null;
+            JSONObject params = new JSONObject(rot47(new String(r.body, StandardCharsets.UTF_8)));
+            String csl = optString(params, "common:cdnSmartLink:app");
+            if (csl != null) {
+                JSONObject auth = new JSONObject(csl).optJSONObject("auth");
+                if (auth != null) salt = auth.optString("salt", FALLBACK_SALT);
+            }
+            String gpd = optString(params, "g_player_domains");
+            if (gpd != null) {
+                JSONArray foth = new JSONObject(gpd).optJSONArray("foth");
+                if (foth != null) {
+                    for (int i = 0; i < foth.length(); i++) {
+                        String d = foth.optString(i, "");
+                        if (d.startsWith("http")) {
+                            referer = d.endsWith("/") ? d : d + "/";
+                            break;
                         }
                     }
                 }
             }
+            return new String[]{salt, referer};
         } catch (Exception ignored) {
+            return null;
         }
-        return new String[]{salt, referer};
     }
 
     private static String optString(JSONObject o, String key) {
@@ -456,7 +461,7 @@ public final class RbApi {
     public static StreamInfo streamDetail(String dataApi, long matchId, long streamId, long siteType) throws Exception {
         String url = dataApi + "/api/stream/detail?matchId=" + matchId + "&sportType=1&streamId=" + streamId
                 + "&siteType=" + siteType + "&continent=EU&country=ES&digit=foth&withOriginal=true";
-        Http.Resp r = Http.get(url, apiHeaders());
+        Http.Resp r = Http.getPlaybackMetadata(url, apiHeaders());
         PbResponse resp = parsePbResponse(r.body);
         if (resp.data != null) {
             for (Pb.Field f : Pb.parse(resp.data)) {

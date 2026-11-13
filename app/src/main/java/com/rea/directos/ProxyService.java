@@ -77,7 +77,7 @@ public class ProxyService extends Service {
      * Re-resuelve un canal (stream/detail) para refrescar la URL CDN caducada.
      * Es seguro llamarlo desde el proxy o desde el reproductor.
      */
-    public static StreamInfo refreshStreamInfo(long sid) {
+    private static StreamInfo refreshStreamInfo(long sid) {
         StreamInfo cur = STREAMS.get(sid);
         if (cur == null || cur.matchId <= 0 || dataApi == null) return cur;
         try {
@@ -96,10 +96,10 @@ public class ProxyService extends Service {
     }
 
     /** Reload salt/referer from /api/common/params (rotan de vez en cuando). */
-    public static void refreshParamsNow() {
+    private static void refreshParamsNow() {
         if (dataApi == null) return;
         try {
-            String[] p = RbApi.fetchParams(dataApi);
+            String[] p = RbApi.refreshParams(dataApi);
             if (p != null && p.length >= 2) {
                 salt = p[0];
                 referer = p[1];

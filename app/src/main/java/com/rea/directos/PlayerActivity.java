@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.View;
 import android.widget.ImageButton;
 import android.widget.Toast;
@@ -25,6 +26,7 @@ import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.exoplayer.DefaultLivePlaybackSpeedControl;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
@@ -44,15 +46,25 @@ public class PlayerActivity extends AppCompatActivity {
     private static final String VLC_PACKAGE = "org.videolan.vlc";
     private static final String STATE_FULLSCREEN = "fullscreen";
     private static final int MAX_RECONNECTS = 8;
+    private static final long TARGET_LIVE_OFFSET_MS = 20000;
+    private static final long BUFFER_CHECK_INTERVAL_MS = 1000;
+    private static final long BUFFER_NO_PROGRESS_MS = 18000;
+    private static final long MAX_BUFFERING_MS = 40000;
 
     private final Handler retryHandler = new Handler(Looper.getMainLooper());
     private final Runnable resetReconnects = () -> {
         reconnects = 0;
         gaveUp = false;
     };
+    private final Runnable bufferingCheck = this::checkBuffering;
     private Runnable pendingRetry;
     private int reconnects;
     private boolean gaveUp;
+    private boolean started;
+    private boolean resumeLocalPlayback = true;
+    private long bufferingSince = -1;
+    private long lastBufferProgress;
+    private long bufferedMs;
 
     public static void start(Context ctx, long sid, String label) {
         Intent i = new Intent(ctx, PlayerActivity.class);
@@ -96,26 +108,39 @@ public class PlayerActivity extends AppCompatActivity {
 
         player = buildPlayer();
         player.setMediaItem(localItem);
-        player.prepare();
-        player.setPlayWhenReady(true);
         view.setPlayer(player);
         view.setKeepScreenOn(true);
         player.addListener(new Player.Listener() {
             @Override public void onPlayerError(PlaybackException error) {
-                if (!casting) scheduleReconnect(R.string.player_reconnecting);
+                scheduleReconnect(R.string.player_reconnecting, error.getErrorCodeName());
             }
 
             @Override public void onPlaybackStateChanged(int state) {
-                if (casting) return;
                 if (state == Player.STATE_ENDED) {
-                    scheduleReconnect(R.string.player_reconnecting_end);
+                    scheduleReconnect(R.string.player_reconnecting_end, "fin del directo");
+                }
+            }
+
+            @Override public void onEvents(Player source, Player.Events events) {
+                if (isLocalPlaybackRequested() && source.getPlaybackState() == Player.STATE_BUFFERING) {
+                    if (bufferingSince < 0) {
+                        bufferingSince = lastBufferProgress = SystemClock.elapsedRealtime();
+                        bufferedMs = source.getTotalBufferedDuration();
+                        retryHandler.postDelayed(bufferingCheck, BUFFER_CHECK_INTERVAL_MS);
+                    }
+                } else {
+                    stopBufferingCheck();
+                    if (!isLocalPlaybackRequested()) cancelRetry();
                 }
             }
 
             @Override public void onIsPlayingChanged(boolean isPlaying) {
                 // Solo damos por buena la conexion tras 30 s seguidos reproduciendo.
                 retryHandler.removeCallbacks(resetReconnects);
-                if (isPlaying && !casting) retryHandler.postDelayed(resetReconnects, 30000);
+                if (isPlaying && isLocalPlaybackRequested()) {
+                    cancelRetry();
+                    retryHandler.postDelayed(resetReconnects, 30000);
+                }
             }
         });
 
@@ -151,23 +176,54 @@ public class PlayerActivity extends AppCompatActivity {
     // Reproductor y reconexion
     // ------------------------------------------------------------------
     private ExoPlayer buildPlayer() {
-        // Mas margen que los 8 s por defecto: el CDN a veces tarda en servir un
-        // segmento, y el proxy ahora lo reenvia en streaming segun llega.
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
-                .setConnectTimeoutMs(15000)
-                .setReadTimeoutMs(30000)
-                .setAllowCrossProtocolRedirects(true)
+                .setConnectTimeoutMs(2000)
+                .setReadTimeoutMs(24000)
                 .setUserAgent("SportStreaming");
         DefaultMediaSourceFactory media = new DefaultMediaSourceFactory(http)
-                .setLoadErrorHandlingPolicy(new DefaultLoadErrorHandlingPolicy(5));
+                .setLiveTargetOffsetMs(TARGET_LIVE_OFFSET_MS)
+                .setLiveMinSpeed(0.97f)
+                .setLiveMaxSpeed(1.02f)
+                .setLoadErrorHandlingPolicy(new DefaultLoadErrorHandlingPolicy(3));
         return new ExoPlayer.Builder(this)
                 .setMediaSourceFactory(media)
+                .setLivePlaybackSpeedControl(new DefaultLivePlaybackSpeedControl.Builder()
+                        .setTargetLiveOffsetIncrementOnRebufferMs(2000)
+                        .build())
                 .build();
     }
 
+    private boolean isLocalPlaybackRequested() {
+        return started && !casting && player != null && player.getPlayWhenReady()
+                && !isFinishing() && !isDestroyed();
+    }
+
+    private void checkBuffering() {
+        if (!isLocalPlaybackRequested() || player.getPlaybackState() != Player.STATE_BUFFERING) {
+            stopBufferingCheck();
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        long currentBuffer = player.getTotalBufferedDuration();
+        if (currentBuffer - bufferedMs >= 250) {
+            bufferedMs = currentBuffer;
+            lastBufferProgress = now;
+        }
+        if (now - lastBufferProgress >= BUFFER_NO_PROGRESS_MS || now - bufferingSince >= MAX_BUFFERING_MS) {
+            scheduleReconnect(R.string.player_reconnecting, "búfer detenido (" + (now - bufferingSince) + " ms)");
+            return;
+        }
+        retryHandler.postDelayed(bufferingCheck, BUFFER_CHECK_INTERVAL_MS);
+    }
+
+    private void stopBufferingCheck() {
+        retryHandler.removeCallbacks(bufferingCheck);
+        bufferingSince = -1;
+    }
+
     /** Un fallo de red/CDN no debe dejar el partido parado: reintenta con espera creciente. */
-    private void scheduleReconnect(int messageRes) {
-        if (pendingRetry != null || isFinishing() || isDestroyed()) return;
+    private void scheduleReconnect(int messageRes, String reason) {
+        if (pendingRetry != null || !isLocalPlaybackRequested()) return;
         if (reconnects >= MAX_RECONNECTS) {
             if (!gaveUp) {
                 gaveUp = true;
@@ -175,32 +231,19 @@ public class PlayerActivity extends AppCompatActivity {
             }
             return;
         }
-        reconnects++;
-        if (reconnects == 1 || reconnects == MAX_RECONNECTS) {
+        if (reconnects == 0) {
             Toast.makeText(this, messageRes, Toast.LENGTH_SHORT).show();
         }
-        long delay = Math.min(10000L, 1000L * reconnects);
         pendingRetry = () -> {
             pendingRetry = null;
-            reload();
+            if (!isLocalPlaybackRequested() || player.isPlaying()) return;
+            reconnects++;
+            RequestLog.add("móvil", "Reconexión /go/" + sid, 0, reason + " · intento " + reconnects);
+            stopBufferingCheck();
+            player.setMediaItem(localItem);
+            player.prepare();
         };
-        retryHandler.postDelayed(pendingRetry, delay);
-    }
-
-    private void reload() {
-        if (player == null || isFinishing() || isDestroyed()) return;
-        final long streamId = sid;
-        new Thread(() -> {
-            // Refresca la URL CDN caducada y el salt/referer antes de reintentar.
-            ProxyService.refreshStreamInfo(streamId);
-            ProxyService.refreshParamsNow();
-            runOnUiThread(() -> {
-                if (player == null || isFinishing() || isDestroyed()) return;
-                player.setMediaItem(localItem);
-                player.prepare();
-                player.play();
-            });
-        }, "player-reconnect").start();
+        retryHandler.postDelayed(pendingRetry, Math.min(8000L, 250L << reconnects));
     }
 
     // ------------------------------------------------------------------
@@ -286,14 +329,15 @@ public class PlayerActivity extends AppCompatActivity {
     /** Envia la playlist al receptor (la TV la lee del proxy via red local). */
     private void startCastPlayback(String lanUrl) {
         if (castPlayer == null || player == null) return;
+        casting = true;
         cancelRetry();
+        stopBufferingCheck();
         player.pause();
         MediaItem item = new MediaItem.Builder()
                 .setUri(lanUrl)
                 .setMimeType(MimeTypes.APPLICATION_M3U8)
                 .setMediaMetadata(new MediaMetadata.Builder().setTitle(label).build())
                 .build();
-        casting = true;
         castPlayer.setMediaItem(item);
         castPlayer.prepare();
         castPlayer.play();
@@ -314,9 +358,12 @@ public class PlayerActivity extends AppCompatActivity {
         casting = false;
         reconnects = 0;
         gaveUp = false;
+        resumeLocalPlayback = true;
         player.setMediaItem(localItem);
-        player.prepare();
-        player.play();
+        if (started) {
+            player.prepare();
+            player.play();
+        }
         view.setPlayer(player);
     }
 
@@ -343,9 +390,26 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        started = true;
+        if (casting || !resumeLocalPlayback) return;
+        if (gaveUp) resetReconnects.run();
+        player.play();
+        if (player.getPlaybackState() == Player.STATE_IDLE) {
+            player.prepare();
+        } else if (player.getPlaybackState() == Player.STATE_ENDED) {
+            scheduleReconnect(R.string.player_reconnecting_end, "fin del directo");
+        }
+    }
+
+    @Override
     protected void onStop() {
+        started = false;
+        if (!casting) resumeLocalPlayback = player.getPlayWhenReady();
         cancelRetry();
-        if (player != null) player.pause();
+        stopBufferingCheck();
+        player.pause();
         super.onStop();
     }
 

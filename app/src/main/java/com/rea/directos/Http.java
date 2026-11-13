@@ -13,6 +13,7 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
 import okhttp3.OkHttpClient;
+import okhttp3.Call;
 import okhttp3.Request;
 import okhttp3.Response;
 
@@ -51,22 +52,18 @@ public final class Http {
         }
     }
 
-    private static volatile OkHttpClient client;
+    private static final class Clients {
+        static final OkHttpClient GENERAL = build();
+        static final OkHttpClient PLAYBACK = GENERAL.newBuilder()
+                .connectTimeout(4, TimeUnit.SECONDS)
+                .readTimeout(7, TimeUnit.SECONDS)
+                .build();
+    }
 
     private Http() {}
 
     public static OkHttpClient client() {
-        OkHttpClient c = client;
-        if (c == null) {
-            synchronized (Http.class) {
-                c = client;
-                if (c == null) {
-                    c = build();
-                    client = c;
-                }
-            }
-        }
-        return c;
+        return Clients.GENERAL;
     }
 
     private static OkHttpClient build() {
@@ -82,8 +79,6 @@ public final class Http {
                     .sslSocketFactory(ctx.getSocketFactory(), tm)
                     .hostnameVerifier((hostname, session) -> true)
                     .connectTimeout(15, TimeUnit.SECONDS)
-                    // Es el margen entre trozos, no el tiempo total: con el proxy
-                    // en streaming los datos empiezan a llegar enseguida.
                     .readTimeout(25, TimeUnit.SECONDS)
                     .writeTimeout(25, TimeUnit.SECONDS)
                     .retryOnConnectionFailure(true)
@@ -94,13 +89,18 @@ public final class Http {
     }
 
     public static Resp get(String url, Map<String, String> headers) throws IOException {
-        Request.Builder b = new Request.Builder().url(url).get();
-        if (headers != null) {
-            for (Map.Entry<String, String> e : headers.entrySet()) {
-                b.header(e.getKey(), e.getValue());
-            }
-        }
-        try (Response r = client().newCall(b.build()).execute()) {
+        return get(client().newCall(request(url, headers)));
+    }
+
+    /** Las playlists y sus credenciales son pequeñas y tienen un plazo total. */
+    public static Resp getPlaybackMetadata(String url, Map<String, String> headers) throws IOException {
+        Call call = Clients.PLAYBACK.newCall(request(url, headers));
+        call.timeout().timeout(7, TimeUnit.SECONDS);
+        return get(call);
+    }
+
+    private static Resp get(Call call) throws IOException {
+        try (Response r = call.execute()) {
             Resp out = new Resp();
             out.status = r.code();
             out.body = r.body() != null ? r.body().bytes() : new byte[0];
@@ -114,13 +114,8 @@ public final class Http {
      * El llamador es responsable de cerrar el {@link Stream}.
      */
     public static Stream open(String url, Map<String, String> headers) throws IOException {
-        Request.Builder b = new Request.Builder().url(url).get();
-        if (headers != null) {
-            for (Map.Entry<String, String> e : headers.entrySet()) {
-                b.header(e.getKey(), e.getValue());
-            }
-        }
-        Response r = client().newCall(b.build()).execute();
+        // El plazo de lectura se aplica entre bytes. El segmento entero puede tardar más.
+        Response r = Clients.PLAYBACK.newCall(request(url, headers)).execute();
         Stream out = new Stream();
         out.response = r;
         out.status = r.code();
@@ -133,5 +128,15 @@ public final class Http {
             out.body = new ByteArrayInputStream(new byte[0]);
         }
         return out;
+    }
+
+    private static Request request(String url, Map<String, String> headers) {
+        Request.Builder builder = new Request.Builder().url(url).get();
+        if (headers != null) {
+            for (Map.Entry<String, String> header : headers.entrySet()) {
+                builder.header(header.getKey(), header.getValue());
+            }
+        }
+        return builder.build();
     }
 }
